@@ -65,6 +65,9 @@ private:
   std::string map_frame_id;
   bool publish_imu2lidar;
   double tf_time_offset;
+  // project the published odom -> base transform onto the ground plane.
+  bool flatten_odom_tf;
+  double flatten_odom_z;
 
   std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>> map_pub;
 

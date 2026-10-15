@@ -1,5 +1,6 @@
 #include <glim_ros/rviz_viewer.hpp>
 
+#include <cmath>
 #include <mutex>
 #include <spdlog/spdlog.h>
 #include <rclcpp/clock.hpp>
@@ -16,6 +17,19 @@
 
 namespace glim {
 
+namespace {
+/// Project a transform onto the ground plane: keep x, y and yaw, pin z, roll and pitch.
+void flatten_ground_plane(geometry_msgs::msg::TransformStamped& trans, double z) {
+  trans.transform.translation.z = z;
+  const auto q = trans.transform.rotation;
+  const double yaw = std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+  trans.transform.rotation.x = 0.0;
+  trans.transform.rotation.y = 0.0;
+  trans.transform.rotation.z = std::sin(yaw * 0.5);
+  trans.transform.rotation.w = std::cos(yaw * 0.5);
+}
+}  // namespace
+
 RvizViewer::RvizViewer() : logger(create_module_logger("rviz")) {
   const Config config(GlobalConfig::get_config_path("config_ros"));
 
@@ -30,6 +44,13 @@ RvizViewer::RvizViewer() : logger(create_module_logger("rviz")) {
   map_frame_id = config.param<std::string>("glim_ros", "map_frame_id", "map");
   publish_imu2lidar = config.param<bool>("glim_ros", "publish_imu2lidar", true);
   tf_time_offset = config.param<double>("glim_ros", "tf_time_offset", 1e-6);
+  flatten_odom_tf = config.param<bool>("glim_ros", "flatten_odom_tf", false);
+  flatten_odom_z = config.param<double>("glim_ros", "flatten_odom_z", 0.0);
+  if (flatten_odom_tf) {
+    logger->warn("flatten_odom_tf enabled: published {} -> {} is projected to z={:.3f}, roll=pitch=0.",
+                 odom_frame_id, base_frame_id, flatten_odom_z);
+    logger->warn("The odom topic is NOT projected and still carries the full 6-DoF estimate.");
+  }
 
   last_globalmap_pub_time = rclcpp::Clock(rcl_clock_type_t::RCL_ROS_TIME).now();
   trajectory.reset(new TrajectoryManager);
@@ -239,6 +260,7 @@ void RvizViewer::odometry_new_frame(const EstimationFrame::ConstPtr& new_frame, 
       trans.transform.rotation.y = quat_odom_imu.y();
       trans.transform.rotation.z = quat_odom_imu.z();
       trans.transform.rotation.w = quat_odom_imu.w();
+      if (flatten_odom_tf) flatten_ground_plane(trans, flatten_odom_z);
       tf_broadcaster->sendTransform(trans);
     } else {
       try {
@@ -260,6 +282,7 @@ void RvizViewer::odometry_new_frame(const EstimationFrame::ConstPtr& new_frame, 
         trans.transform.rotation.y = quat_odom_base.y();
         trans.transform.rotation.z = quat_odom_base.z();
         trans.transform.rotation.w = quat_odom_base.w();
+        if (flatten_odom_tf) flatten_ground_plane(trans, flatten_odom_z);
         tf_broadcaster->sendTransform(trans);
       } catch (const tf2::TransformException& e) {
         logger->warn("Failed to lookup transform from {} to {} (stamp={}.{}): {}", imu_frame_id, base_frame_id, stamp.sec, stamp.nanosec, e.what());
